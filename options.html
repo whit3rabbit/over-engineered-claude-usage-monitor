@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Claude Usage — Settings</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="options.css" />
+</head>
+<body>
+
+  <header>
+    <div class="logo">◈ CLAUDE USAGE — SETTINGS</div>
+  </header>
+
+  <main>
+
+    <section>
+      <h2>ORG ID</h2>
+      <p class="desc">Your Claude org UUID — needed to poll the usage endpoint. Find it in DevTools → Network → any <code>/api/organizations/{uuid}/</code> request.</p>
+
+      <div class="field">
+        <label for="org-id">ORG UUID</label>
+        <input type="text" id="org-id" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" spellcheck="false" />
+        <div class="field-hint">Paste once and forget. Stored locally, never leaves your browser except in requests to claude.ai.</div>
+      </div>
+
+      <div class="field toggle-field">
+        <label for="auto-detect">Auto-detect from page requests <span class="warn-label">⚠ patches window.fetch</span></label>
+        <input type="checkbox" id="auto-detect" />
+      </div>
+      <p class="field-hint auto-detect-hint">When enabled, overrides <code>window.fetch</code> on claude.ai to sniff the org ID from the first API call. Automatically disables itself once the ID is found and stored.</p>
+    </section>
+
+    <section>
+      <h2>UTILIZATION GOALS</h2>
+      <p class="desc">Warn when utilization exceeds these thresholds. Goal markers appear on bars.</p>
+
+      <div class="field">
+        <label for="goal-5h">5-HOUR WINDOW GOAL (%)</label>
+        <input type="number" id="goal-5h" min="10" max="100" step="5" value="80" />
+      </div>
+
+      <div class="field">
+        <label for="goal-7d">7-DAY WINDOW GOAL (%)</label>
+        <input type="number" id="goal-7d" min="10" max="100" step="5" value="70" />
+      </div>
+    </section>
+
+    <section>
+      <h2>NOTIFICATIONS</h2>
+      <div class="field toggle-field">
+        <label for="pace-notifs">Pace warnings (badge turns red at 90% with &gt;1hr left)</label>
+        <input type="checkbox" id="pace-notifs" />
+      </div>
+    </section>
+
+    <section>
+      <h2>IOT PUSH</h2>
+      <p class="desc">Push credentials directly to your NodeMCU over LAN. Session cookie is read automatically from your browser — no manual copy-paste needed.</p>
+
+      <div class="field">
+        <label for="iot-endpoint">DEVICE IP</label>
+        <input type="text" id="iot-endpoint" placeholder="http://192.168.0.62" />
+        <div class="field-hint">IP shown on the OLED display after boot.</div>
+      </div>
+
+      <div class="push-row">
+        <button id="push-btn" class="push-btn">↑ Push to device</button>
+        <span id="push-status"></span>
+      </div>
+
+      <div class="field toggle-field" style="margin-top:14px">
+        <label for="iot-enabled">Auto-repush cookie on every poll</label>
+        <input type="checkbox" id="iot-enabled" />
+      </div>
+      <div class="field-hint" style="margin-top:4px">Keeps the device in sync when your session cookie rotates. Recommended.</div>
+    </section>
+
+    <section>
+      <h2>DATA</h2>
+      <p class="desc">Usage history is stored locally in your browser. 30-day rolling window.</p>
+      <button id="clear-history" class="danger-btn">Clear History</button>
+    </section>
+
+    <div class="save-row">
+      <button id="save-btn">SAVE SETTINGS</button>
+      <span id="save-status"></span>
+    </div>
+
+  </main>
+
+  <script src="options.js"></script>
+</body>
+</html>

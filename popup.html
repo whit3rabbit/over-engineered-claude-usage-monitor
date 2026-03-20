@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Claude Usage</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+
+  <header>
+    <div class="logo">◈ CLAUDE USAGE</div>
+    <div class="header-right">
+      <span id="last-updated" class="dim">—</span>
+      <button id="refresh-btn" title="Refresh now">↻</button>
+      <button id="settings-btn" title="Settings">⚙</button>
+    </div>
+  </header>
+
+  <div id="no-data" class="notice hidden">
+    Open <strong>claude.ai</strong> and send a message to initialize tracking.
+  </div>
+
+  <div id="main-content">
+
+    <!-- ── 5-HOUR WINDOW ── -->
+    <section class="window-section">
+      <div class="window-header">
+        <span class="window-label">5-HOUR WINDOW</span>
+        <span id="5h-pace" class="pace-badge"></span>
+        <span id="5h-util" class="util-pct">—</span>
+      </div>
+      <div class="bar-track">
+        <div id="5h-fill" class="bar-fill"></div>
+        <div id="5h-goal" class="goal-marker" title="Your goal"></div>
+      </div>
+      <div class="bar-meta">
+        <span id="5h-session" class="session-delta dim"></span>
+        <span id="5h-countdown" class="countdown dim"></span>
+      </div>
+    </section>
+
+    <!-- ── 7-DAY WINDOW ── -->
+    <section class="window-section">
+      <div class="window-header">
+        <span class="window-label">7-DAY WINDOW</span>
+        <span id="7d-util" class="util-pct">—</span>
+      </div>
+      <div class="bar-track">
+        <div id="7d-fill" class="bar-fill"></div>
+        <div id="7d-goal" class="goal-marker" title="Your goal"></div>
+      </div>
+      <div class="bar-meta" style="justify-content: flex-end;">
+        <span id="7d-countdown" class="countdown dim"></span>
+      </div>
+    </section>
+
+    <div class="divider"></div>
+
+    <!-- ── HEATMAP ── -->
+    <section class="chart-section">
+      <div class="chart-label">HOURLY PATTERN <span class="dim">(last 14 days)</span></div>
+      <canvas id="heatmap" width="336" height="72"></canvas>
+      <div class="heatmap-axis">
+        <span>12am</span><span>6am</span><span>12pm</span><span>6pm</span><span>11pm</span>
+      </div>
+    </section>
+
+    <!-- ── WEEKLY ── -->
+    <section class="chart-section">
+      <div class="chart-label">DAILY AVG <span class="dim">(5hr window, last 4wk)</span></div>
+      <canvas id="weekly" width="336" height="64"></canvas>
+      <div class="weekly-axis" id="weekly-axis"></div>
+    </section>
+
+    <div class="divider"></div>
+
+    <footer>
+      <button id="export-btn" class="footer-btn">↓ CSV</button>
+      <span class="dim footer-version">v1.0.0</span>
+    </footer>
+
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
