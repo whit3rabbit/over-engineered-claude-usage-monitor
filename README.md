@@ -127,7 +127,7 @@ graph TD
     end
 
     SW -->|HTTPS GET| API
-    SW -->|Network Push<br/>(Cookie + JSON Pacing)| Node
+    SW -->|"Network Push<br/>(Cookie + JSON Pacing)"| Node
 ```
 
 ---
