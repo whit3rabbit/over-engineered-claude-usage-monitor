@@ -174,7 +174,7 @@ void drawBar(int x, int y, int w, int h, float pct) {
 }
 
 void formatCountdown(long secs, char* buf, int bufLen) {
-  if (secs <= 0) { snprintf(buf, bufLen, "resetting..."); return; }
+  if (secs <= 0) { snprintf(buf, bufLen, "ready"); return; }
   long d = secs / 86400, h = (secs % 86400) / 3600, m = (secs % 3600) / 60;
   if (d > 0)      snprintf(buf, bufLen, "resets %ldd %ldh", d, h);
   else if (h > 0) snprintf(buf, bufLen, "resets %ldh %ldm", h, m);
