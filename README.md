@@ -460,6 +460,25 @@ Authenticated endpoints use HMAC-SHA256 challenge-response auth (nonce from `/pi
 
 ---
 
+## Daemon Resource Profile
+
+The Rust daemon is designed to run indefinitely as a background process. Profiled on Apple Silicon (arm64) over a 5-minute run with 10-second poll intervals:
+
+| Metric | Value |
+|--------|-------|
+| Binary size | 3.8 MB (stripped, LTO) |
+| Physical memory (macOS) | 4.5 MB |
+| RSS steady-state | ~12 MB |
+| RSS peak | 13 MB |
+| CPU (idle) | 0.0% |
+| Threads (steady-state) | 2 |
+
+**No memory leak.** RSS peaked at 13 MB during initial HTTP client setup, then settled to ~12 MB. The macOS physical footprint (4.5 MB) reflects actual memory pressure. RSS is dominated by the TLS stack (rustls) and reqwest's connection pool; the daemon's own state is negligible.
+
+**Zero idle CPU.** The process blocks on tokio timers between poll cycles. Each cycle is one HTTPS request + JSON parse + one LAN HTTP push. Thread count briefly spikes to 3-6 during TLS handshakes, returning to 2 immediately.
+
+---
+
 ## License & Fair Use
 
 This project interacts with OAuth APIs that may change. If Anthropic modifies the endpoint structure or authentication flow, the daemon will need updating. It is built strictly as a personal engineering project to monitor one's own usage data, and sends zero telemetry to the cloud.
