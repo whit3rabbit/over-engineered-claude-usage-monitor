@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Template: install.sh substitutes BINARY_PATH and DEVICE_HOST.
+     Manual install: replace placeholders, copy to ~/Library/LaunchAgents/,
+     then: launchctl load ~/Library/LaunchAgents/com.claude.usage-daemon.plist -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.claude.usage-daemon</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>BINARY_PATH</string>
+        <string>--device-host</string>
+        <string>DEVICE_HOST</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/claude-usage-daemon.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/claude-usage-daemon.err</string>
+
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+</dict>
+</plist>
