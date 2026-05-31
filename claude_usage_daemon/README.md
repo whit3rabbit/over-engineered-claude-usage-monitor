@@ -135,11 +135,11 @@ The daemon reads OAuth tokens written by the Claude CLI. It tries sources in thi
 | 1 | macOS Keychain (service: `Claude Code-credentials`) | macOS only |
 | 2 | `~/.claude/.credentials.json` | All platforms |
 
-**macOS Keychain prompt:** On first run, macOS will show a dialog asking whether to allow the daemon to access the "Claude Code-credentials" keychain item. Click **Always Allow** so the daemon can read and refresh OAuth tokens without prompting on every launch.
+**macOS Keychain prompt:** On first run, macOS will show a dialog asking whether to allow the daemon to access the "Claude Code-credentials" keychain item. Click **Always Allow** if you want the daemon to read Claude CLI tokens from Keychain without prompting on every launch.
 
-### Token refresh
+### Token ownership
 
-When the access token is within 60 seconds of expiry, the daemon refreshes it via `POST https://platform.claude.com/v1/oauth/token` using the stored refresh token. Refreshed credentials are written back atomically (see below).
+Claude CLI owns OAuth refresh. The daemon treats Claude CLI credentials as read-only and never calls Anthropic's OAuth refresh endpoint. When an access token is expired or within 60 seconds of expiry, usage updates pause until Claude CLI refreshes the stored credentials or you run `claude` again.
 
 ### Credential file format
 
@@ -204,8 +204,8 @@ The daemon classifies errors and adjusts behavior accordingly.
 
 | Error | Cause | Behavior |
 |-------|-------|----------|
-| **AuthExpired** | 401/403 from usage API | Clear cached credentials, force reload + refresh next cycle |
-| **AuthRevoked** | 401/403 from token refresh endpoint | Log loudly, retry from disk (CLI may have re-authed) |
+| **AuthExpired** | 401/403 from usage API | Clear cached credentials, reload Claude CLI storage next cycle |
+| **Expired** | Stored Claude CLI access token is expired | Log loudly, wait for Claude CLI to refresh credentials |
 | **Transient** | 429, 5xx, network timeout | Exponential backoff (interval * 2^n, max 1 hour) |
 | **NotFound** | No credentials file, keychain empty | Log error, retry at normal interval |
 | **DeviceOffline** | Device push failed | Log warning, continue normal interval |
@@ -215,28 +215,21 @@ The daemon classifies errors and adjusts behavior accordingly.
 - **Transient errors**: Exponential backoff. Base interval doubles on each consecutive failure (300s, 600s, 1200s, ...), capped at 1 hour. Resets to base interval on success.
 - **Auth failures**: After 3 consecutive auth failures, the daemon slows to 30-minute intervals and logs:
   ```
-  ERROR: Authentication failed 3 times. Re-run `claude` CLI to refresh tokens. Retrying in 30 minutes.
+  ERROR: Authentication unavailable 3 times. Run `claude` to refresh login state. Retrying in 30 minutes.
   ```
   Resets when a successful cycle completes (e.g., user re-authenticates via CLI).
 - **Device offline**: No backoff. The daemon continues fetching usage data on schedule and retries the push each cycle.
 
-## Concurrency Safety
+## Credential Safety
 
-### File locking
-
-The daemon and Claude CLI may both write to `.credentials.json`. To prevent corruption:
-
-- Writes go to `.credentials.json.tmp` first, then atomically renamed over the target file.
-- An exclusive advisory lock (`.credentials.lock`) is held during the write.
-- Lock acquisition retries up to 5 times with randomized 1-2 second backoff, matching the Claude CLI's locking behavior.
-- The lock file uses `flock()` on Unix and `LockFileEx` on Windows via the `fs2` crate.
+The daemon does not write Claude OAuth credentials. This avoids consuming Claude CLI's rotating refresh token from a background process, which can otherwise leave Claude CLI with stale credentials and force a later login.
 
 ### In-memory credential cache
 
 Credentials are cached in-memory as `Arc<OAuthCredentials>` to avoid cloning strings on every poll cycle. The cache is invalidated when:
 - The token expires (checked before each cycle)
 - The usage API returns 401 (token may have been revoked externally)
-- Token refresh fails (falls back to re-reading from disk)
+- A fresh read from Claude CLI storage returns expired credentials
 
 ## launchd (macOS)
 
@@ -291,7 +284,7 @@ sudo loginctl enable-linger $USER
 ```
 src/
   main.rs          CLI args, poll loop, backoff state, daemon/foreground modes
-  credentials.rs   Keychain + file reading, token refresh, atomic writes, file locking
+  credentials.rs   Keychain + file reading
   usage.rs         OAuth usage API fetch, typed errors (AuthExpired/Transient)
   push.rs          HTTP push to device, ping health check
 ```

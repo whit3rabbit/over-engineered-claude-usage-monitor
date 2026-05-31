@@ -373,22 +373,61 @@ fn cleanup_pid(args: &Args) {
     }
 }
 
-/// Load credentials from disk and cache them, returning None on failure.
+fn record_auth_failure(state: &mut PollState, message: &str) {
+    state.auth_failures = state.auth_failures.saturating_add(1);
+    if state.auth_failures >= AUTH_FAIL_SLOWDOWN {
+        log::error!(
+            "Authentication unavailable {} times: {message}. Run `claude` to refresh login state. Retrying in 30 minutes.",
+            state.auth_failures
+        );
+    } else {
+        log::warn!("{message}");
+    }
+}
+
+/// Load CLI-owned credentials from disk and cache them only if the access token is usable.
+fn cache_if_usable(
+    fresh: credentials::OAuthCredentials,
+    state: &mut PollState,
+) -> Result<Arc<credentials::OAuthCredentials>, CredentialError> {
+    if let Err(e) = credentials::ensure_not_expired(&fresh) {
+        state.cached_creds = None;
+        return Err(e);
+    }
+    let arc = Arc::new(fresh);
+    state.cached_creds = Some(Arc::clone(&arc));
+    Ok(arc)
+}
+
 fn load_and_cache(
     config_dir: &std::path::Path,
     state: &mut PollState,
+) -> Result<Arc<credentials::OAuthCredentials>, CredentialError> {
+    let fresh = credentials::load_credentials(config_dir)?;
+    cache_if_usable(fresh, state)
+}
+
+fn take_usable_cached_credentials(
+    state: &mut PollState,
 ) -> Option<Arc<credentials::OAuthCredentials>> {
-    match credentials::load_credentials(config_dir) {
-        Ok(fresh) => {
-            let arc = Arc::new(fresh);
-            state.cached_creds = Some(Arc::clone(&arc));
-            Some(arc)
-        }
-        Err(e) => {
-            log::error!("Cannot load credentials: {e}");
-            None
+    if let Some(cached) = &state.cached_creds {
+        if !cached.is_expired() {
+            return Some(Arc::clone(cached));
         }
     }
+
+    state.cached_creds = None;
+    None
+}
+
+fn credentials_for_cycle(
+    config_dir: &std::path::Path,
+    state: &mut PollState,
+) -> Result<Arc<credentials::OAuthCredentials>, CredentialError> {
+    if let Some(cached) = take_usable_cached_credentials(state) {
+        return Ok(cached);
+    }
+    load_and_cache(config_dir, state)
 }
 
 async fn poll_and_push(
@@ -399,51 +438,16 @@ async fn poll_and_push(
     api_key: &str,
     state: &mut PollState,
 ) {
-    // -- Load or refresh credentials --
-    let creds = match &state.cached_creds {
-        Some(c) if !c.is_expired() => Arc::clone(c),
-        Some(c) => {
-            match credentials::refresh_token(c, config_dir, http).await {
-                Ok(refreshed) => {
-                    log::info!("Token refreshed successfully");
-                    let arc = Arc::new(refreshed);
-                    state.cached_creds = Some(Arc::clone(&arc));
-                    arc
-                }
-                Err(CredentialError::AuthRevoked(e)) => {
-                    state.auth_failures += 1;
-                    if state.auth_failures >= AUTH_FAIL_SLOWDOWN {
-                        log::error!(
-                            "Authentication failed {} times: {e}. Re-run `claude` CLI to refresh tokens. Retrying in 30 minutes.",
-                            state.auth_failures
-                        );
-                    } else {
-                        log::warn!("Token refresh denied ({e}), reloading from storage");
-                    }
-                    match load_and_cache(config_dir, state) {
-                        Some(arc) => arc,
-                        None => return,
-                    }
-                }
-                Err(CredentialError::Transient(e)) => {
-                    state.transient_backoff = state.transient_backoff.saturating_add(1);
-                    log::warn!("Token refresh transient error ({e}), will backoff");
-                    match load_and_cache(config_dir, state) {
-                        Some(arc) => arc,
-                        None => return,
-                    }
-                }
-                Err(CredentialError::NotFound(e)) => {
-                    log::error!("Credentials not found: {e}");
-                    return;
-                }
-            }
+    // -- Load read-only credentials --
+    let creds = match credentials_for_cycle(config_dir, state) {
+        Ok(creds) => creds,
+        Err(CredentialError::Expired(e)) => {
+            record_auth_failure(state, &e);
+            return;
         }
-        None => {
-            match load_and_cache(config_dir, state) {
-                Some(arc) => arc,
-                None => return,
-            }
+        Err(CredentialError::NotFound(e)) => {
+            log::error!("Cannot load credentials: {e}");
+            return;
         }
     };
 
@@ -451,15 +455,13 @@ async fn poll_and_push(
     let usage_resp = match usage::fetch_usage(http, &creds.access_token).await {
         Ok(resp) => resp,
         Err(UsageError::AuthExpired(e)) => {
-            log::warn!("Usage API auth expired ({e}), clearing cached credentials");
-            state.cached_creds = None; // Force reload + refresh on next cycle.
-            state.auth_failures += 1;
-            if state.auth_failures >= AUTH_FAIL_SLOWDOWN {
-                log::error!(
-                    "Authentication failed {} times. Re-run `claude` CLI to refresh tokens. Retrying in 30 minutes.",
-                    state.auth_failures
-                );
-            }
+            state.cached_creds = None; // Force reload from Claude CLI storage on next cycle.
+            record_auth_failure(
+                state,
+                &format!(
+                    "Usage API rejected the current Claude CLI access token ({e}). Waiting for Claude CLI to refresh credentials"
+                ),
+            );
             return;
         }
         Err(UsageError::Transient(e)) => {
@@ -511,5 +513,79 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     {
         tokio::signal::ctrl_c().await.ok();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn creds_with_expiry(expires_at: Option<u64>) -> credentials::OAuthCredentials {
+        credentials::OAuthCredentials {
+            access_token: "access".into(),
+            refresh_token: Some("refresh".into()),
+            expires_at,
+            scopes: None,
+            source: Some(credentials::CredentialSource::File),
+        }
+    }
+
+    fn future_expiry_ms() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
+            + 3_600_000
+    }
+
+    #[test]
+    fn expired_credentials_are_not_cached_as_usable() {
+        let mut state = PollState::new();
+        state.cached_creds = Some(Arc::new(creds_with_expiry(Some(future_expiry_ms()))));
+
+        let err = cache_if_usable(creds_with_expiry(Some(0)), &mut state).unwrap_err();
+
+        match err {
+            CredentialError::Expired(msg) => {
+                assert!(msg.contains("Claude CLI credentials are expired"));
+            }
+            other => panic!("expected expired credentials error, got {other}"),
+        }
+        assert!(state.cached_creds.is_none());
+    }
+
+    #[test]
+    fn valid_credentials_are_cached_as_usable() {
+        let mut state = PollState::new();
+        let cached = cache_if_usable(creds_with_expiry(Some(future_expiry_ms())), &mut state)
+            .expect("future credentials should be usable");
+
+        assert_eq!(cached.access_token, "access");
+        assert!(state.cached_creds.is_some());
+    }
+
+    #[test]
+    fn expired_cached_credentials_are_cleared() {
+        let mut state = PollState::new();
+        state.cached_creds = Some(Arc::new(creds_with_expiry(Some(0))));
+
+        let cached = take_usable_cached_credentials(&mut state);
+
+        assert!(cached.is_none());
+        assert!(state.cached_creds.is_none());
+    }
+
+    #[test]
+    fn auth_failure_slowdown_still_applies() {
+        let mut state = PollState::new();
+        let base = Duration::from_secs(300);
+
+        record_auth_failure(&mut state, "expired");
+        record_auth_failure(&mut state, "expired");
+        assert_eq!(state.next_interval(base), base);
+
+        record_auth_failure(&mut state, "expired");
+        assert_eq!(state.next_interval(base), SLOWDOWN_INTERVAL);
     }
 }

@@ -1,24 +1,14 @@
 #[cfg(target_os = "macos")]
-use security_framework::passwords::{get_generic_password, set_generic_password};
+use security_framework::passwords::get_generic_password;
 #[cfg(target_os = "macos")]
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Token refresh threshold: refresh when less than 60 seconds remain.
+/// Expiry safety threshold: treat tokens with less than 60 seconds left as unusable.
 const REFRESH_THRESHOLD_MS: u64 = 60_000;
 
-const TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
-
-/// OAuth public client ID. Not a secret (RFC 7636 public client flow).
-const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
-
-/// Lock retry config matching Claude CLI behavior.
-const LOCK_MAX_RETRIES: u32 = 5;
-const LOCK_BACKOFF_MIN_MS: u64 = 1000;
-const LOCK_BACKOFF_MAX_MS: u64 = 2000;
-
-/// Where credentials were loaded from, so we save back to the same place.
+/// Where credentials were loaded from.
 #[derive(Clone, Debug, PartialEq)]
 pub enum CredentialSource {
     Keychain,
@@ -66,18 +56,15 @@ struct CredentialsFile {
 pub enum CredentialError {
     /// Credentials not found (file missing, keychain empty).
     NotFound(String),
-    /// Token is expired and refresh failed with a permanent error (401/403).
-    AuthRevoked(String),
-    /// Transient error (network, I/O, lock contention exhausted).
-    Transient(String),
+    /// Claude CLI-owned credentials are expired; the daemon must not refresh them.
+    Expired(String),
 }
 
 impl std::fmt::Display for CredentialError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotFound(s) => write!(f, "credentials not found: {s}"),
-            Self::AuthRevoked(s) => write!(f, "auth revoked: {s}"),
-            Self::Transient(s) => write!(f, "transient error: {s}"),
+            Self::Expired(s) => write!(f, "credentials expired: {s}"),
         }
     }
 }
@@ -93,6 +80,17 @@ impl OAuthCredentials {
             None => false,
         }
     }
+}
+
+/// Enforce the daemon's read-only ownership boundary for Claude CLI credentials.
+pub fn ensure_not_expired(creds: &OAuthCredentials) -> Result<(), CredentialError> {
+    if creds.is_expired() {
+        return Err(CredentialError::Expired(
+            "Claude CLI credentials are expired. Run `claude` to let Claude CLI refresh them."
+                .into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Parse credentials JSON, handling both nested and flat formats.
@@ -202,180 +200,6 @@ pub fn load_credentials(config_dir: &Path) -> Result<OAuthCredentials, Credentia
             )))
         }
     }
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct TokenRefreshResponse {
-    access_token: String,
-    refresh_token: Option<String>,
-    expires_in: Option<u64>,
-}
-
-/// Refresh the OAuth token and return updated credentials.
-pub async fn refresh_token(
-    creds: &OAuthCredentials,
-    config_dir: &Path,
-    http: &reqwest::Client,
-) -> Result<OAuthCredentials, CredentialError> {
-    let refresh_token = creds
-        .refresh_token
-        .as_deref()
-        .ok_or_else(|| CredentialError::AuthRevoked("No refresh token available".into()))?;
-
-    log::info!("Refreshing OAuth token");
-
-    let body = serde_json::json!({
-        "grant_type": "refresh_token",
-        "refresh_token": refresh_token,
-        "client_id": CLIENT_ID,
-    });
-
-    let resp = http
-        .post(TOKEN_URL)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| CredentialError::Transient(format!("Refresh request failed: {e}")))?;
-
-    let status = resp.status();
-    if !status.is_success() {
-        let body_text = resp.text().await.unwrap_or_default();
-        // 401/403 = token permanently revoked. 429/5xx = transient.
-        if status.as_u16() == 401 || status.as_u16() == 403 {
-            return Err(CredentialError::AuthRevoked(
-                format!("Token refresh returned {status}: {body_text}")
-            ));
-        }
-        return Err(CredentialError::Transient(
-            format!("Token refresh returned {status}: {body_text}")
-        ));
-    }
-
-    let token_resp: TokenRefreshResponse = resp
-        .json()
-        .await
-        .map_err(|e| CredentialError::Transient(format!("Failed to parse refresh response: {e}")))?;
-
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
-
-    let new_creds = OAuthCredentials {
-        access_token: token_resp.access_token,
-        refresh_token: token_resp
-            .refresh_token
-            .or_else(|| creds.refresh_token.clone()),
-        expires_at: token_resp.expires_in.map(|secs| now_ms + secs * 1000),
-        scopes: creds.scopes.clone(),
-        source: creds.source.clone(),
-    };
-
-    let source = creds.source.as_ref().unwrap_or(&CredentialSource::File);
-    if let Err(e) = save_credentials(&new_creds, config_dir, source).await {
-        log::warn!("Failed to persist refreshed credentials: {e}");
-    }
-
-    Ok(new_creds)
-}
-
-/// Save refreshed credentials back to the source they were loaded from.
-async fn save_credentials(
-    creds: &OAuthCredentials,
-    config_dir: &Path,
-    source: &CredentialSource,
-) -> Result<(), String> {
-    match source {
-        CredentialSource::Keychain => save_to_keychain(creds),
-        CredentialSource::File => save_to_file(creds, config_dir).await,
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn save_to_keychain(creds: &OAuthCredentials) -> Result<(), String> {
-    let account = std::env::var("USER").unwrap_or_else(|_| "claude-code-user".into());
-    let wrapper = serde_json::json!({ "claudeAiOauth": creds });
-    let json = serde_json::to_string(&wrapper)
-        .map_err(|e| format!("JSON serialize error: {e}"))?;
-
-    set_generic_password(KEYCHAIN_SERVICE, &account, json.as_bytes())
-        .map_err(|e| format!("Keychain write failed: {e}"))?;
-
-    log::debug!("Saved refreshed credentials to Keychain");
-    Ok(())
-}
-
-#[cfg(not(target_os = "macos"))]
-fn save_to_keychain(_creds: &OAuthCredentials) -> Result<(), String> {
-    Err("Keychain not available on this platform".into())
-}
-
-async fn save_to_file(creds: &OAuthCredentials, config_dir: &Path) -> Result<(), String> {
-    use fs2::FileExt;
-    use rand::Rng;
-
-    let path = config_dir.join(".credentials.json");
-    let lock_path = config_dir.join(".credentials.lock");
-    let tmp_path = config_dir.join(".credentials.json.tmp");
-
-    // Acquire exclusive lock with retry.
-    let lock_file = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(&lock_path)
-        .map_err(|e| format!("Cannot open lock file: {e}"))?;
-
-    let mut locked = false;
-    for attempt in 0..LOCK_MAX_RETRIES {
-        match lock_file.try_lock_exclusive() {
-            Ok(()) => {
-                locked = true;
-                break;
-            }
-            Err(_) if attempt < LOCK_MAX_RETRIES - 1 => {
-                let backoff = rand::thread_rng()
-                    .gen_range(LOCK_BACKOFF_MIN_MS..=LOCK_BACKOFF_MAX_MS);
-                log::debug!("Lock contention, retry {}/{} in {backoff}ms",
-                    attempt + 1, LOCK_MAX_RETRIES);
-                tokio::time::sleep(std::time::Duration::from_millis(backoff)).await;
-            }
-            Err(e) => {
-                return Err(format!("Failed to acquire lock after {LOCK_MAX_RETRIES} attempts: {e}"));
-            }
-        }
-    }
-
-    if !locked {
-        return Err("Failed to acquire credentials lock".into());
-    }
-
-    // Serialize and write to temp file.
-    let wrapper = serde_json::json!({
-        "claudeAiOauth": creds,
-    });
-    let json = serde_json::to_string_pretty(&wrapper)
-        .map_err(|e| format!("JSON serialize error: {e}"))?;
-
-    std::fs::write(&tmp_path, &json).map_err(|e| format!("Write to temp failed: {e}"))?;
-
-    // Set permissions before rename so the file is never world-readable.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o600);
-        std::fs::set_permissions(&tmp_path, perms)
-            .map_err(|e| format!("chmod failed: {e}"))?;
-    }
-
-    // Atomic rename (same filesystem).
-    std::fs::rename(&tmp_path, &path).map_err(|e| format!("Atomic rename failed: {e}"))?;
-
-    // Lock is released when lock_file is dropped.
-    drop(lock_file);
-
-    log::debug!("Saved refreshed credentials to {}", path.display());
-    Ok(())
 }
 
 /// Resolve the config directory, expanding ~ if needed.
@@ -495,6 +319,25 @@ mod tests {
             source: None,
         };
         assert!(!creds.is_expired());
+    }
+
+    #[test]
+    fn test_ensure_not_expired_rejects_expired_credentials() {
+        let creds = OAuthCredentials {
+            access_token: "tok".into(),
+            refresh_token: Some("refresh".into()),
+            expires_at: Some(0),
+            scopes: None,
+            source: Some(CredentialSource::File),
+        };
+
+        let err = ensure_not_expired(&creds).unwrap_err();
+        match err {
+            CredentialError::Expired(msg) => {
+                assert!(msg.contains("Claude CLI credentials are expired"));
+            }
+            other => panic!("expected expired credentials error, got {other}"),
+        }
     }
 
     /// Validate that the daemon can read credentials from the real macOS Keychain

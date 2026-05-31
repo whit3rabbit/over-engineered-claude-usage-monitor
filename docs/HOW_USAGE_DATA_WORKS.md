@@ -39,24 +39,9 @@ Current Claude CLI versions use the plain service name `Claude Code-credentials`
 
 A flat format (`accessToken`/`refreshToken`/`expiresAt` at root level) is also accepted as a fallback.
 
-**Token refresh:**
+**Token ownership:**
 
-When the access token has less than 60 seconds remaining, the daemon refreshes it automatically:
-
-```
-POST https://platform.claude.com/v1/oauth/token
-Content-Type: application/json
-
-{
-  "grant_type": "refresh_token",
-  "refresh_token": "<current_refresh_token>",
-  "client_id": "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-}
-```
-
-The client ID is a public OAuth client (RFC 7636 public client flow). It is not a secret.
-
-Refreshed tokens are written back atomically: write to `.credentials.json.tmp`, set `0600` permissions, rename over the original. An advisory file lock (`.credentials.lock`) prevents races with concurrent Claude CLI processes.
+Claude CLI owns OAuth refresh. The daemon reads access tokens only and never calls Anthropic's OAuth refresh endpoint. When the stored access token has less than 60 seconds remaining, the daemon treats it as unusable, clears its in-memory cache, and waits for Claude CLI to refresh storage. If this persists, run `claude` and complete login or let the CLI refresh its own credentials.
 
 ### Data Retrieval
 
@@ -124,11 +109,11 @@ Default poll interval: 300 seconds (5 minutes). The device stores zero credentia
 |-----------|----------|
 | Auth failure (401/403) | Increment counter. After 3 consecutive failures, slow to 30-min intervals. Log message to re-run `claude` CLI. |
 | Transient error (429/5xx/network) | Exponential backoff: 2x, 4x, 8x the base interval, capped at 1 hour. Resets on success. |
-| Token expired mid-cycle | Clear cached credentials, force reload from Keychain/file on next cycle. |
+| Token expired mid-cycle | Clear cached credentials, reload Claude CLI storage on the next cycle. |
 
 ### Source Files
 
-- `claude_usage_daemon/src/credentials.rs` -- Keychain/file reading, token refresh, atomic save
+- `claude_usage_daemon/src/credentials.rs` -- Keychain/file reading
 - `claude_usage_daemon/src/usage.rs` -- API fetch, response models, payload flattening
 - `claude_usage_daemon/src/push.rs` -- HTTP push to device, ping health check
 - `claude_usage_daemon/src/main.rs` -- CLI args, poll loop, backoff state, daemonization
@@ -234,7 +219,7 @@ MV3 service workers are aggressively unloaded by Chrome. A 24-second alarm (`chr
 |--------|---------------|-------------------|
 | API endpoint | `api.anthropic.com/api/oauth/usage` | `claude.ai/api/organizations/{orgId}/usage` |
 | Auth mechanism | Bearer token from CLI OAuth credentials | Browser session cookies (implicit) |
-| Token management | Auto-refresh with atomic file writes | Handled by browser cookie jar |
+| Token management | Read-only; Claude CLI owns OAuth refresh | Handled by browser cookie jar |
 | Prerequisite | Claude CLI logged in (`claude` command) | Logged into `claude.ai` in Chrome |
 | Runs where | Background process (macOS/Linux/Windows) | Chrome browser only |
 | Output target | Hardware device over LAN HTTP | Extension badge, popup UI, notifications, and hardware device over LAN HTTP |

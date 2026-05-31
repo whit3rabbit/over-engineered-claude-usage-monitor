@@ -155,7 +155,7 @@ The daemon reads OAuth tokens from the Claude CLI. Run `claude` and complete the
 | macOS | Keychain (`Claude Code-credentials`) | `~/.claude/.credentials.json` |
 | Linux | -- | `~/.claude/.credentials.json` |
 
-Tokens are refreshed automatically when they expire. The daemon never stores or transmits your OAuth credentials to the hardware device. It only pushes pre-parsed usage percentages.
+Claude CLI owns OAuth refresh. The daemon treats these credentials as read-only; when they expire, usage updates pause until Claude CLI refreshes them or you run `claude` again. The daemon never stores or transmits your OAuth credentials to the hardware device. It only pushes pre-parsed usage percentages.
 
 For details on how usage data is retrieved and why API keys cannot be used, see [How Usage Data Works](docs/HOW_USAGE_DATA_WORKS.md).
 
@@ -341,7 +341,7 @@ macOS Keychain / ~/.claude/.credentials.json
 Rust Daemon (claude-usage-daemon)
   1. Read OAuth tokens
   2. GET api.anthropic.com/api/oauth/usage
-  3. Refresh tokens if expired
+  3. Wait for Claude CLI if tokens are expired
   4. POST http://device:8080/usage (HMAC-SHA256 auth)
         |
         v
@@ -365,7 +365,7 @@ For a detailed breakdown of authentication, API endpoints, and data formats, see
 │   ├── Cargo.toml
 │   ├── src/
 │   │   ├── main.rs                # CLI args, poll loop, daemonization
-│   │   ├── credentials.rs         # Keychain/file reading, token refresh
+│   │   ├── credentials.rs         # Keychain/file reading
 │   │   ├── usage.rs               # Usage API fetch, response models
 │   │   └── push.rs                # HTTP push to device, HMAC auth
 │   └── resources/
